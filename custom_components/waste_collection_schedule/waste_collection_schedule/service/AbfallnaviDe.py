@@ -2,7 +2,6 @@
 
 import json
 from datetime import datetime
-
 import requests
 from waste_collection_schedule.exceptions import (
     SourceArgumentNotFoundWithSuggestions,
@@ -140,11 +139,6 @@ SERVICE_DOMAINS = [
         "url": "https://zew-entsorgung.de/",
         "service_id": "zew2",
     },
-    #    {
-    #        "title": "'Stadt Straelen",
-    #        "url": "https://www.straelen.de/",
-    #        "service_id": "straelen",
-    #    },
     {
         "title": "Stadt Cuxhaven",
         "url": "https://www.cuxhaven.de/",
@@ -172,7 +166,7 @@ class AbfallnaviDe:
         except requests.exceptions.ConnectionError:
             self._service_url = self._service_url_fallback
             r = requests.get(f"{self._service_url}/{path}", params=params)
-        r.encoding = "utf-8"  # requests doesn't guess the encoding correctly
+        r.encoding = "utf-8"
         if r.status_code == 404:
             raise SourceArgumentNotFoundWithSuggestions(
                 "service",
@@ -185,7 +179,6 @@ class AbfallnaviDe:
         return json.loads(self._fetch(path, params=params))
 
     def get_cities(self):
-        """Return all cities of service domain."""
         cities = self._fetch_json("orte")
         result = {}
         for city in cities:
@@ -193,7 +186,6 @@ class AbfallnaviDe:
         return result
 
     def get_city_id(self, city):
-        """Return id for given city string."""
         cities = self.get_cities()
         city_id = self._find_in_inverted_dict(cities, city)
         if not city_id:
@@ -203,7 +195,6 @@ class AbfallnaviDe:
         return city_id
 
     def get_streets(self, city_id):
-        """Return all streets of a city."""
         streets = self._fetch_json(f"orte/{city_id}/strassen")
         result = {}
         for street in streets:
@@ -211,11 +202,20 @@ class AbfallnaviDe:
         return result
 
     def get_street_ids(self, city_id, street):
-        """Return ids for given street string.
-
-        may return multiple on change of id (may occur on year change)
-        """
+        """Return ids for given street string OR allow direct ID."""
         streets = self.get_streets(city_id)
+
+        # Sonderfall: wenn "street" direkt eine ID ist
+        if street and str(street).isdigit():
+            sid = int(street)
+            if sid in streets:
+                return [sid]
+            else:
+                raise SourceArgumentNotFoundWithSuggestions(
+                    "street_id", street, list(streets.keys())
+                )
+
+        # Standard: Suche nach Namen
         if len(streets) == 1:
             return list(streets.keys())
         if street is None:
@@ -230,16 +230,13 @@ class AbfallnaviDe:
         return matches
 
     def get_house_numbers(self, street_id):
-        """Return all house numbers of a street."""
         house_numbers = self._fetch_json(f"strassen/{street_id}")
         result = {}
         for hausNr in house_numbers.get("hausNrList", {}):
-            # {"id":5985445,"name":"Adalbert-Stifter-Straße","hausNrList":[{"id":5985446,"nr":"1"},
             result[hausNr["id"]] = hausNr["nr"]
         return result
 
     def get_house_number_id(self, street_id, house_number):
-        """Return id for given house number string."""
         house_numbers = self.get_house_numbers(street_id)
         if len(house_numbers) == 0:
             return None
@@ -256,7 +253,6 @@ class AbfallnaviDe:
             raise SourceArgumentNotFoundWithSuggestions(
                 "house_number", house_number, list(house_numbers.values())
             )
-
         return id
 
     def get_waste_types(self):
@@ -267,17 +263,12 @@ class AbfallnaviDe:
         return result
 
     def _get_dates(self, target, id, waste_types=None):
-        # retrieve collections
         args = []
-
         if waste_types is None:
             waste_types = self.get_waste_types()
-
         for f in waste_types.keys():
             args.append(("fraktion", f))
-
         results = self._fetch_json(f"{target}/{id}/termine", params=args)
-
         entries = []
         for r in results:
             date = datetime.strptime(r["datum"], "%Y-%m-%d").date()
@@ -292,20 +283,11 @@ class AbfallnaviDe:
         return self._get_dates("hausnummern", house_number_id, waste_types=None)
 
     def get_dates(self, city, street, house_number=None):
-        """Get dates by strings only for convenience."""
-        # find city_id
         city_id = self.get_city_id(city)
-
-        # find street_id
         street_ids = self.get_street_ids(city_id, street)
-
         dates = []
         for street_id in street_ids:
-            # find house_number_id (which is optional: not all house number do have an id)
             house_number_id = self.get_house_number_id(street_id, house_number)
-
-            # return dates for specific house number of street if house number
-            # doesn't have an own id
             if house_number_id is not None:
                 dates += self.get_dates_by_house_number_id(house_number_id)
             else:
